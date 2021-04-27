@@ -25,7 +25,7 @@ from sklearn.metrics import f1_score
 from transformers.data.metrics import simple_accuracy
 
 import log
-from pet.utils import InputExample, exact_match, save_logits, save_predictions, softmax, LogitsList, set_seed, eq_div
+from pet.utils import InputExample, exact_match, save_logits, save_predictions, softmax, LogitsList, set_seed, eq_div, distillation_loss
 from pet.wrapper import TransformerModelWrapper, SEQUENCE_CLASSIFIER_WRAPPER, WrapperConfig
 
 logger = log.get_logger('root')
@@ -58,7 +58,7 @@ class TrainConfig(PetConfig):
                  n_gpu: int = 1, num_train_epochs: int = 3, max_steps: int = -1, gradient_accumulation_steps: int = 1,
                  weight_decay: float = 0.0, learning_rate: float = 5e-5, adam_epsilon: float = 1e-8,
                  warmup_steps: int = 0, max_grad_norm: float = 1, lm_training: bool = False, use_logits: bool = False,
-                 alpha: float = 0.9999, temperature: float = 1):
+                 alpha: float = 0.9999, temperature: float = 1, mlm_logits: bool = False):
         """
         Create a new training config.
 
@@ -95,13 +95,14 @@ class TrainConfig(PetConfig):
         self.use_logits = use_logits
         self.alpha = alpha
         self.temperature = temperature
+        self.mlm_logits = mlm_logits
 
 
 class EvalConfig(PetConfig):
     """Configuration for evaluating a model."""
 
     def __init__(self, device: str = None, n_gpu: int = 1, per_gpu_eval_batch_size: int = 8,
-                 metrics: List[str] = None, decoding_strategy: str = 'default', priming: bool = False):
+                 metrics: List[str] = None, decoding_strategy: str = 'default', priming: bool = False, temperature: float = 1.):
         """
         Create a new evaluation config.
 
@@ -118,6 +119,7 @@ class EvalConfig(PetConfig):
         self.metrics = metrics
         self.decoding_strategy = decoding_strategy
         self.priming = priming
+        self.temperature = temperature
 
 
 class IPetConfig(PetConfig):
@@ -455,7 +457,8 @@ def train_single_model(model: TransformerModelWrapper, train_data: List[InputExa
             lm_training=config.lm_training,
             use_logits=config.use_logits,
             alpha=config.alpha,
-            temperature=config.temperature
+            temperature=config.temperature,
+            mlm_logits=config.mlm_logits
         )
         results_dict['global_step'] = global_step
         results_dict['average_loss'] = tr_loss
@@ -501,6 +504,11 @@ def evaluate(model: TransformerModelWrapper, eval_data: List[InputExample], conf
             scores[metric] = f1_score(results['labels'], predictions, average='macro')
         elif metric == 'em':
             scores[metric] = exact_match(predictions, results['labels'], results['question_ids'])
+        elif metric == 'dist-loss':
+            if eval_data[0].logits is not None:
+                scores[metric] = distillation_loss(torch.tensor(results['logits']), torch.stack([torch.tensor(ex.logits, dtype=torch.float32) for ex in eval_data]), config.temperature)
+            else:
+                scores[metric] = 0.
         else:
             raise ValueError(f"Metric '{metric}' not implemented")
 

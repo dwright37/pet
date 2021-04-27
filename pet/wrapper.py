@@ -17,6 +17,7 @@ provides convenience methods for training and inference.
 import json
 import jsonpickle
 import os
+import ipdb
 from typing import List, Dict, Optional
 
 import torch
@@ -29,13 +30,13 @@ from transformers import InputExample, AdamW, get_linear_schedule_with_warmup, P
     XLNetLMHeadModel, BertConfig, BertForSequenceClassification, BertTokenizer, RobertaConfig, \
     RobertaForSequenceClassification, RobertaTokenizer, XLMRobertaConfig, XLMRobertaForSequenceClassification, \
     XLMRobertaTokenizer, AlbertForSequenceClassification, AlbertForMaskedLM, AlbertTokenizer, AlbertConfig, \
-    GPT2Config, GPT2LMHeadModel, GPT2Tokenizer
+    GPT2Config, GPT2LMHeadModel, GPT2Tokenizer, LongformerConfig, LongformerTokenizer, LongformerForSequenceClassification, LongformerForMaskedLM
 from transformers import __version__ as transformers_version
 
 import log
 from pet import preprocessor
 from pet.tasks import TASK_HELPERS
-from pet.utils import InputFeatures, DictDataset, distillation_loss
+from pet.utils import InputFeatures, DictDataset, distillation_loss, batch_collate_fn
 
 logger = log.get_logger('root')
 
@@ -87,6 +88,12 @@ MODEL_CLASSES = {
         'config': GPT2Config,
         'tokenizer': GPT2Tokenizer,
         MLM_WRAPPER: GPT2LMHeadModel
+    },
+    'longformer': {
+        'config': LongformerConfig,
+        'tokenizer': LongformerTokenizer,
+        SEQUENCE_CLASSIFIER_WRAPPER: LongformerForSequenceClassification,
+        MLM_WRAPPER: LongformerForMaskedLM
     },
 }
 
@@ -196,7 +203,7 @@ class TransformerModelWrapper:
               learning_rate: float = 5e-5, adam_epsilon: float = 1e-8, warmup_steps=0, max_grad_norm: float = 1,
               logging_steps: int = 50, per_gpu_unlabeled_batch_size: int = 8, unlabeled_data: List[InputExample] = None,
               lm_training: bool = False, use_logits: bool = False, alpha: float = 0.8, temperature: float = 1,
-              max_steps=-1, **_):
+              max_steps=-1, mlm_logits: bool = False, **_):
         """
         Train the underlying language model.
 
@@ -225,7 +232,7 @@ class TransformerModelWrapper:
         train_batch_size = per_gpu_train_batch_size * max(1, n_gpu)
         train_dataset = self._generate_dataset(task_train_data)
         train_sampler = RandomSampler(train_dataset)
-        train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=train_batch_size)
+        train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=train_batch_size, collate_fn=batch_collate_fn)
 
         unlabeled_dataloader, unlabeled_iter = None, None
 
@@ -236,7 +243,7 @@ class TransformerModelWrapper:
             unlabeled_dataset = self._generate_dataset(unlabeled_data, labelled=False)
             unlabeled_sampler = RandomSampler(unlabeled_dataset)
             unlabeled_dataloader = DataLoader(unlabeled_dataset, sampler=unlabeled_sampler,
-                                              batch_size=unlabeled_batch_size)
+                                              batch_size=unlabeled_batch_size, collate_fn=batch_collate_fn)
             unlabeled_iter = unlabeled_dataloader.__iter__()
 
         if use_logits:
@@ -294,7 +301,7 @@ class TransformerModelWrapper:
 
                 train_step_inputs = {
                     'unlabeled_batch': unlabeled_batch, 'lm_training': lm_training, 'alpha': alpha,
-                    'use_logits': use_logits, 'temperature': temperature
+                    'use_logits': use_logits, 'temperature': temperature, 'mlm_logits': mlm_logits
                 }
                 loss = self.task_helper.train_step(batch, **train_step_inputs) if self.task_helper else None
 
@@ -354,7 +361,7 @@ class TransformerModelWrapper:
         eval_dataset = self._generate_dataset(eval_data, priming=priming)
         eval_batch_size = per_gpu_eval_batch_size * max(1, n_gpu)
         eval_sampler = SequentialSampler(eval_dataset)
-        eval_dataloader = DataLoader(eval_dataset, sampler=eval_sampler, batch_size=eval_batch_size)
+        eval_dataloader = DataLoader(eval_dataset, sampler=eval_sampler, batch_size=eval_batch_size, collate_fn=batch_collate_fn)
 
         if n_gpu > 1:
             self.model = torch.nn.DataParallel(self.model)
@@ -406,7 +413,8 @@ class TransformerModelWrapper:
             'labels': torch.tensor([f.label for f in features], dtype=torch.long),
             'mlm_labels': torch.tensor([f.mlm_labels for f in features], dtype=torch.long),
             'logits': torch.tensor([f.logits for f in features], dtype=torch.float),
-            'idx': torch.tensor([f.idx for f in features], dtype=torch.long)
+            'idx': torch.tensor([f.idx for f in features], dtype=torch.long),
+            'len': torch.tensor([f.length for f in features], dtype=torch.long)
         }
         if self.config.wrapper_type == PLM_WRAPPER:
             feature_dict['perm_mask'] = torch.tensor([f.perm_mask for f in features], dtype=torch.float)
@@ -472,7 +480,7 @@ class TransformerModelWrapper:
 
     def mlm_train_step(self, labeled_batch: Dict[str, torch.Tensor],
                        unlabeled_batch: Optional[Dict[str, torch.Tensor]] = None, lm_training: bool = False,
-                       alpha: float = 0, **_) -> torch.Tensor:
+                       alpha: float = 0, mlm_logits: bool = False, temperature: float = 1.0, **_) -> torch.Tensor:
         """Perform a MLM training step."""
 
         inputs = self.generate_default_inputs(labeled_batch)
@@ -480,7 +488,10 @@ class TransformerModelWrapper:
 
         outputs = self.model(**inputs)
         prediction_scores = self.preprocessor.pvp.convert_mlm_logits_to_cls_logits(mlm_labels, outputs[0])
-        loss = nn.CrossEntropyLoss()(prediction_scores.view(-1, len(self.config.label_list)), labels.view(-1))
+        if mlm_logits:
+            loss = distillation_loss(prediction_scores, labeled_batch['logits'], temperature)
+        else:
+            loss = nn.CrossEntropyLoss()(prediction_scores.view(-1, len(self.config.label_list)), labels.view(-1))
 
         if lm_training:
             lm_inputs = self.generate_default_inputs(unlabeled_batch)

@@ -67,6 +67,7 @@ class MLMPreprocessor(Preprocessor):
             input_ids, token_type_ids = self.pvp.encode(example)
 
         attention_mask = [1] * len(input_ids)
+        length = len(input_ids)
         padding_length = self.wrapper.config.max_seq_length - len(input_ids)
 
         if padding_length < 0:
@@ -92,7 +93,7 @@ class MLMPreprocessor(Preprocessor):
             mlm_labels = [-1] * self.wrapper.config.max_seq_length
 
         return InputFeatures(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids,
-                             label=label, mlm_labels=mlm_labels, logits=logits, idx=example.idx)
+                             label=label, mlm_labels=mlm_labels, logits=logits, idx=example.idx, length=length)
 
 
 class PLMPreprocessor(MLMPreprocessor):
@@ -129,6 +130,7 @@ class SequenceClassifierPreprocessor(Preprocessor):
             )
         input_ids, token_type_ids = inputs["input_ids"], inputs.get("token_type_ids")
 
+        length = len(input_ids)
         attention_mask = [1] * len(input_ids)
         padding_length = self.wrapper.config.max_seq_length - len(input_ids)
 
@@ -148,4 +150,4 @@ class SequenceClassifierPreprocessor(Preprocessor):
         logits = example.logits if example.logits else [-1]
 
         return InputFeatures(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids,
-                             label=label, mlm_labels=mlm_labels, logits=logits, idx=example.idx)
+                             label=label, mlm_labels=mlm_labels, logits=logits, idx=example.idx, length=length)

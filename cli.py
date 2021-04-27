@@ -45,11 +45,12 @@ def load_pet_configs(args) -> Tuple[WrapperConfig, pet.TrainConfig, pet.EvalConf
                                 gradient_accumulation_steps=args.pet_gradient_accumulation_steps,
                                 weight_decay=args.weight_decay, learning_rate=args.learning_rate,
                                 adam_epsilon=args.adam_epsilon, warmup_steps=args.warmup_steps,
-                                max_grad_norm=args.max_grad_norm, lm_training=args.lm_training, alpha=args.alpha)
+                                max_grad_norm=args.max_grad_norm, lm_training=args.lm_training, alpha=args.alpha,
+                                mlm_logits=args.soft_labels, temperature=args.temperature)
 
     eval_cfg = pet.EvalConfig(device=args.device, n_gpu=args.n_gpu, metrics=args.metrics,
                               per_gpu_eval_batch_size=args.pet_per_gpu_eval_batch_size,
-                              decoding_strategy=args.decoding_strategy, priming=args.priming)
+                              decoding_strategy=args.decoding_strategy, priming=args.priming, temperature=args.temperature)
 
     return model_cfg, train_cfg, eval_cfg
 
@@ -115,6 +116,8 @@ def main():
                         help="Whether to use language modeling as auxiliary task (only for PET)")
     parser.add_argument("--alpha", default=0.9999, type=float,
                         help="Weighting term for the auxiliary language modeling task (only for PET)")
+    parser.add_argument("--soft_labels", action='store_true',
+                        help="Whether or not the training data uses soft labels (only for PET)")
     parser.add_argument("--temperature", default=2, type=float,
                         help="Temperature used for combining PVPs (only for PET)")
     parser.add_argument("--verbalizer_file", default=None,

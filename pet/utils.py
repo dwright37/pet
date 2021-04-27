@@ -115,7 +115,7 @@ class InputFeatures(object):
     """A set of numeric features obtained from an :class:`InputExample`"""
 
     def __init__(self, input_ids, attention_mask, token_type_ids, label, mlm_labels=None, logits=None,
-                 meta: Optional[Dict] = None, idx=-1):
+                 meta: Optional[Dict] = None, idx=-1, length=None):
         """
         Create new InputFeatures.
 
@@ -136,6 +136,7 @@ class InputFeatures(object):
         self.logits = logits
         self.idx = idx
         self.meta = meta if meta else {}
+        self.length = length
 
     def __repr__(self):
         return str(self.to_json_string())
@@ -340,3 +341,17 @@ def distillation_loss(predictions, targets, temperature):
     p = F.log_softmax(predictions / temperature, dim=1)
     q = F.softmax(targets / temperature, dim=1)
     return F.kl_div(p, q, reduction='sum') * (temperature ** 2) / predictions.shape[0]
+
+
+def batch_collate_fn(inputs):
+    max_len = max([inp['len'] for inp in inputs])
+    return {
+        'input_ids': torch.stack([inp['input_ids'][:max_len] for inp in inputs]),
+        'attention_mask': torch.stack([inp['attention_mask'][:max_len] for inp in inputs]),
+        'token_type_ids': torch.stack([inp['token_type_ids'][:max_len] for inp in inputs]),
+        'mlm_labels': torch.stack([inp['mlm_labels'][:max_len] for inp in inputs]),
+        'labels': torch.stack([inp['labels'] for inp in inputs]),
+        'logits': torch.stack([inp['logits'] for inp in inputs]),
+        'len': torch.stack([inp['len'] for inp in inputs]),
+        'idx': torch.stack([inp['idx'] for inp in inputs])
+    }
