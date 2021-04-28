@@ -284,7 +284,7 @@ class TransformerModelWrapper:
             for _, batch in enumerate(epoch_iterator):
                 self.model.train()
                 unlabeled_batch = None
-
+                
                 batch = {k: t.to(device) for k, t in batch.items()}
 
                 if lm_training:
@@ -485,7 +485,6 @@ class TransformerModelWrapper:
 
         inputs = self.generate_default_inputs(labeled_batch)
         mlm_labels, labels = labeled_batch['mlm_labels'], labeled_batch['labels']
-
         outputs = self.model(**inputs)
         prediction_scores = self.preprocessor.pvp.convert_mlm_logits_to_cls_logits(mlm_labels, outputs[0])
         if mlm_logits:
