@@ -17,8 +17,8 @@ provides convenience methods for training and inference.
 import json
 import jsonpickle
 import os
-import ipdb
 from typing import List, Dict, Optional
+import random
 
 import torch
 import torch.nn as nn
@@ -114,7 +114,8 @@ class WrapperConfig(object):
     """A configuration for a :class:`TransformerModelWrapper`."""
 
     def __init__(self, model_type: str, model_name_or_path: str, wrapper_type: str, task_name: str, max_seq_length: int,
-                 label_list: List[str], pattern_id: int = 0, verbalizer_file: str = None, cache_dir: str = None):
+                 label_list: List[str], pattern_id: int = 0, verbalizer_file: str = None, cache_dir: str = None,
+                 aux_task_name: str = None, aux_label_list: List[str] = None, aux_verbalizer_file: str = None):
         """
         Create a new config.
 
@@ -127,6 +128,7 @@ class WrapperConfig(object):
         :param pattern_id: the id of the pattern to use
         :param verbalizer_file: optional path to a verbalizer file
         :param cache_dir: optional path to a cache dir
+        :param aux_label_list: optional list of labels for the auxiliary task (multi-task only)
         """
         self.model_type = model_type
         self.model_name_or_path = model_name_or_path
@@ -137,6 +139,9 @@ class WrapperConfig(object):
         self.pattern_id = pattern_id
         self.verbalizer_file = verbalizer_file
         self.cache_dir = cache_dir
+        self.aux_task_name = aux_task_name
+        self.aux_label_list = aux_label_list
+        self.aux_verbalizer_file = aux_verbalizer_file
 
 
 class TransformerModelWrapper:
@@ -165,6 +170,10 @@ class TransformerModelWrapper:
 
         self.preprocessor = PREPROCESSORS[self.config.wrapper_type](self, self.config.task_name, self.config.pattern_id,
                                                                     self.config.verbalizer_file)
+        if config.aux_task_name is not None:
+            self.aux_preprocessor = PREPROCESSORS[self.config.wrapper_type](self, self.config.aux_task_name, self.config.pattern_id,
+                                                                    self.config.aux_verbalizer_file, aux_task=True)
+
         self.task_helper = TASK_HELPERS[self.config.task_name](self) if self.config.task_name in TASK_HELPERS else None
 
     @classmethod
@@ -203,7 +212,7 @@ class TransformerModelWrapper:
               learning_rate: float = 5e-5, adam_epsilon: float = 1e-8, warmup_steps=0, max_grad_norm: float = 1,
               logging_steps: int = 50, per_gpu_unlabeled_batch_size: int = 8, unlabeled_data: List[InputExample] = None,
               lm_training: bool = False, use_logits: bool = False, alpha: float = 0.8, temperature: float = 1,
-              max_steps=-1, mlm_logits: bool = False, **_):
+              max_steps=-1, mlm_logits: bool = False, balance_class_weight: bool = False, **_):
         """
         Train the underlying language model.
 
@@ -231,6 +240,13 @@ class TransformerModelWrapper:
 
         train_batch_size = per_gpu_train_batch_size * max(1, n_gpu)
         train_dataset = self._generate_dataset(task_train_data)
+        if balance_class_weight:
+            labels = [d['labels'] for d in train_dataset]
+            weight = torch.tensor(len(labels) / (len(self.config.label_list) * np.bincount(labels)))
+            weight = weight.type(torch.FloatTensor).to(device)
+        else:
+            weight = None
+        print(weight)
         train_sampler = RandomSampler(train_dataset)
         train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=train_batch_size, collate_fn=batch_collate_fn)
 
@@ -240,7 +256,7 @@ class TransformerModelWrapper:
             # we need unlabeled data both for auxiliary language modeling and for knowledge distillation
             assert unlabeled_data is not None
             unlabeled_batch_size = per_gpu_unlabeled_batch_size * max(1, n_gpu)
-            unlabeled_dataset = self._generate_dataset(unlabeled_data, labelled=False)
+            unlabeled_dataset = self._generate_dataset(unlabeled_data, labelled=False, skipsize=1000 if not use_logits else -1)
             unlabeled_sampler = RandomSampler(unlabeled_dataset)
             unlabeled_dataloader = DataLoader(unlabeled_dataset, sampler=unlabeled_sampler,
                                               batch_size=unlabeled_batch_size, collate_fn=batch_collate_fn)
@@ -269,8 +285,8 @@ class TransformerModelWrapper:
                                                     num_training_steps=t_total)
 
         # multi-gpu training
-        if n_gpu > 1:
-            self.model = torch.nn.DataParallel(self.model)
+        # if n_gpu > 1:
+        #     self.model = torch.nn.DataParallel(self.model)
 
         step = 0
         global_step = 0
@@ -301,7 +317,7 @@ class TransformerModelWrapper:
 
                 train_step_inputs = {
                     'unlabeled_batch': unlabeled_batch, 'lm_training': lm_training, 'alpha': alpha,
-                    'use_logits': use_logits, 'temperature': temperature, 'mlm_logits': mlm_logits
+                    'use_logits': use_logits, 'temperature': temperature, 'mlm_logits': mlm_logits, 'weight': weight
                 }
                 loss = self.task_helper.train_step(batch, **train_step_inputs) if self.task_helper else None
 
@@ -343,6 +359,190 @@ class TransformerModelWrapper:
 
         return global_step, (tr_loss / global_step if global_step > 0 else -1)
 
+    def train_multi_task(self, task_train_data: List[InputExample], device, per_gpu_train_batch_size: int = 8, n_gpu: int = 1,
+              num_train_epochs: int = 3, gradient_accumulation_steps: int = 1, weight_decay: float = 0.0,
+              learning_rate: float = 5e-5, adam_epsilon: float = 1e-8, warmup_steps=0, max_grad_norm: float = 1,
+              logging_steps: int = 50, per_gpu_unlabeled_batch_size: int = 8, unlabeled_data: List[InputExample] = None,
+              lm_training: bool = False, use_logits: bool = False, alpha: float = 0.8, temperature: float = 1,
+              max_steps=-1, mlm_logits: bool = False, balance_class_weight: bool = False, **_):
+        """
+        Train the underlying language model using multi-task learning.
+
+        :param task_train_data: the training examples to use
+        :param device: the training device (cpu/gpu)
+        :param per_gpu_train_batch_size: the number of training examples per batch and gpu
+        :param n_gpu: the number of gpus to use
+        :param num_train_epochs: the number of epochs to train
+        :param gradient_accumulation_steps: the number of gradient accumulation steps before performing an update
+        :param weight_decay: the weight decay to use
+        :param learning_rate: the learning rate to use
+        :param adam_epsilon: epsilon parameter for the Adam optimizer
+        :param warmup_steps: the number of warmup steps
+        :param max_grad_norm: the maximum norm for the gradient
+        :param logging_steps: the number of steps after which logging information is printed
+        :param per_gpu_unlabeled_batch_size: the number of unlabeled examples per batch and gpu
+        :param unlabeled_data: the unlabeled examples to use
+        :param lm_training: whether to perform auxiliary language modeling (only for MLMs)
+        :param use_logits: whether to use the example's logits instead of their labels to compute the loss
+        :param alpha: the alpha parameter for auxiliary language modeling
+        :param temperature: the temperature for knowledge distillation
+        :param max_steps: the maximum number of training steps, overrides ``num_train_epochs``
+        :return: a tuple consisting of the total number of steps and the average training loss
+        """
+
+        train_batch_size = per_gpu_train_batch_size * max(1, n_gpu)
+        dataloaders = []
+        weights = []
+        for i,dset in enumerate(task_train_data):
+            if i == 0 or not lm_training:
+                dataset = self._generate_dataset(dset, aux_task=(i > 0))
+                if balance_class_weight:
+                    labels = [d['labels'] for d in dataset]
+                    weight = torch.tensor(len(labels) / (len(self.config.label_list) * np.bincount(labels)))
+                    weight = weight.type(torch.FloatTensor).to(device)
+                else:
+                    weight = None
+                print(weight)
+                train_sampler = RandomSampler(dataset)
+                dl = DataLoader(dataset, sampler=train_sampler, batch_size=train_batch_size,
+                                              collate_fn=batch_collate_fn)
+                dataloaders.append(dl)
+                weights.append(weight)
+
+        unlabeled_dataloader, unlabeled_iter = None, None
+
+        if lm_training or use_logits:
+            # we need unlabeled data both for auxiliary language modeling and for knowledge distillation
+            unlabeled_batch_size = per_gpu_unlabeled_batch_size * max(1, n_gpu)
+            unlabeled_dataset = self._generate_dataset(task_train_data[1], labelled=False,
+                                                       skipsize=1000 if not use_logits else -1, aux_task=True)
+            unlabeled_sampler = RandomSampler(unlabeled_dataset)
+            unlabeled_dataloader = DataLoader(unlabeled_dataset, sampler=unlabeled_sampler,
+                                              batch_size=unlabeled_batch_size, collate_fn=batch_collate_fn)
+            unlabeled_iter = unlabeled_dataloader.__iter__()
+            print(len(unlabeled_dataset))
+        if use_logits:
+            dataloaders = [unlabeled_dataloader]
+
+        if max_steps > 0:
+            t_total = max_steps
+            num_train_epochs = max_steps // (max(1, sum(len(dl) for dl in dataloaders) // gradient_accumulation_steps)) + 1
+        else:
+            t_total = sum(len(dl) for dl in dataloaders) // gradient_accumulation_steps * num_train_epochs
+
+        # Prepare optimizer and schedule (linear warmup and decay)
+        no_decay = ['bias', 'LayerNorm.weight']
+        optimizer_grouped_parameters = [
+            {'params': [p for n, p in self.model.named_parameters() if not any(nd in n for nd in no_decay)],
+             'weight_decay': weight_decay},
+            {'params': [p for n, p in self.model.named_parameters() if any(nd in n for nd in no_decay)],
+             'weight_decay': 0.0}
+        ]
+
+        optimizer = AdamW(optimizer_grouped_parameters, lr=learning_rate, eps=adam_epsilon)
+        scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=warmup_steps,
+                                                    num_training_steps=t_total)
+
+        # multi-gpu training
+        # if n_gpu > 1:
+        #     self.model = torch.nn.DataParallel(self.model)
+
+        step = 0
+        global_step = 0
+        tr_loss, logging_loss = 0.0, 0.0
+        self.model.zero_grad()
+
+        train_iterator = trange(int(num_train_epochs), desc="Epoch")
+        total = sum(len(dl) for dl in dataloaders)
+        for _ in train_iterator:
+            dl_iters = [iter(dl) for dl in dataloaders]
+            if not lm_training:
+                # Try to even this out a bit
+                if len(dataloaders[1]) > len(dataloaders[0]):
+                    dl_idx = [0] + [1]*int(len(dataloaders[1]) / len(dataloaders[0]))#list(range(len(dl_iters)))
+                    loss_weight = len(dataloaders[0]) / len(dataloaders[1])
+                else:
+                    dl_idx = [0] * int(len(dataloaders[0]) / len(dataloaders[1])) + [1]  # list(range(len(dl_iters)))
+                    #loss_weight = 1.
+                loss_weight = min(2.0, len(dataloaders[0]) / len(dataloaders[1]))
+            else:
+                dl_idx = [0]
+            finished = [0] * len(dl_iters)
+            with tqdm(total=total, desc="Training") as pbar:
+                while sum(finished) < len(dl_iters):
+                    random.shuffle(dl_idx)
+                    for d in dl_idx:
+                        task_dl = dl_iters[d]
+                        try:
+                            batch = next(task_dl)
+                        except StopIteration:
+                            finished[d] = 1
+                            continue
+                        self.model.train()
+                        unlabeled_batch = None
+
+                        batch = {k: t.to(device) for k, t in batch.items()}
+
+                        if lm_training:
+                            while unlabeled_batch is None:
+                                try:
+                                    unlabeled_batch = unlabeled_iter.__next__()
+                                except StopIteration:
+                                    logger.info("Resetting unlabeled dataset")
+                                    unlabeled_iter = unlabeled_dataloader.__iter__()
+
+                            lm_input_ids = unlabeled_batch['input_ids']
+                            unlabeled_batch['input_ids'], unlabeled_batch['mlm_labels'] = self._mask_tokens(lm_input_ids)
+                            unlabeled_batch = {k: t.to(device) for k, t in unlabeled_batch.items()}
+
+                        train_step_inputs = {
+                            'unlabeled_batch': unlabeled_batch, 'lm_training': lm_training, 'alpha': alpha,
+                            'use_logits': use_logits, 'temperature': temperature, 'mlm_logits': mlm_logits, 'weight': weights[d],
+                            'aux_task': d > 0
+                        }
+                        loss = self.task_helper.train_step(batch, **train_step_inputs) if self.task_helper else None
+
+                        if loss is None:
+                            loss = TRAIN_STEP_FUNCTIONS[self.config.wrapper_type](self)(batch, **train_step_inputs)
+
+                        if n_gpu > 1:
+                            loss = loss.mean()  # mean() to average on multi-gpu parallel training
+                        if gradient_accumulation_steps > 1:
+                            loss = loss / gradient_accumulation_steps
+                        if d == 1:
+                            loss *= loss_weight
+
+                        loss.backward()
+
+                        tr_loss += loss.item()
+                        if (step + 1) % gradient_accumulation_steps == 0:
+                            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_grad_norm)
+                            optimizer.step()
+                            scheduler.step()
+                            self.model.zero_grad()
+                            global_step += 1
+
+                            if logging_steps > 0 and global_step % logging_steps == 0:
+                                logs = {}
+                                loss_scalar = (tr_loss - logging_loss) / logging_steps
+                                learning_rate_scalar = scheduler.get_lr()[0]
+                                logs['learning_rate'] = learning_rate_scalar
+                                logs['loss'] = loss_scalar
+                                logging_loss = tr_loss
+
+                                print(json.dumps({**logs, **{'step': global_step}}))
+                        pbar.update(1)
+
+                # if 0 < max_steps < global_step:
+                #     epoch_iterator.close()
+                #     break
+                step += 1
+            if 0 < max_steps < global_step:
+                train_iterator.close()
+                break
+
+        return global_step, (tr_loss / global_step if global_step > 0 else -1)
+
     def eval(self, eval_data: List[InputExample], device, per_gpu_eval_batch_size: int = 8, n_gpu: int = 1,
              priming: bool = False, decoding_strategy: str = 'default') -> Dict:
         """
@@ -363,8 +563,8 @@ class TransformerModelWrapper:
         eval_sampler = SequentialSampler(eval_dataset)
         eval_dataloader = DataLoader(eval_dataset, sampler=eval_sampler, batch_size=eval_batch_size, collate_fn=batch_collate_fn)
 
-        if n_gpu > 1:
-            self.model = torch.nn.DataParallel(self.model)
+        # if n_gpu > 1:
+        #     self.model = torch.nn.DataParallel(self.model)
 
         preds = None
         all_indices, out_label_ids, question_ids = None, None, None
@@ -404,34 +604,49 @@ class TransformerModelWrapper:
             'question_ids': question_ids
         }
 
-    def _generate_dataset(self, data: List[InputExample], labelled: bool = True, priming: bool = False):
-        features = self._convert_examples_to_features(data, labelled=labelled, priming=priming)
-        feature_dict = {
-            'input_ids': torch.tensor([f.input_ids for f in features], dtype=torch.long),
-            'attention_mask': torch.tensor([f.attention_mask for f in features], dtype=torch.long),
-            'token_type_ids': torch.tensor([f.token_type_ids for f in features], dtype=torch.long),
-            'labels': torch.tensor([f.label for f in features], dtype=torch.long),
-            'mlm_labels': torch.tensor([f.mlm_labels for f in features], dtype=torch.long),
-            'logits': torch.tensor([f.logits for f in features], dtype=torch.float),
-            'idx': torch.tensor([f.idx for f in features], dtype=torch.long),
-            'len': torch.tensor([f.length for f in features], dtype=torch.long)
-        }
+    def _generate_dataset(self, data: List[InputExample], labelled: bool = True, priming: bool = False, skipsize: int = -1, aux_task: bool = False):
+        features = self._convert_examples_to_features(data, labelled=labelled, priming=priming, aux_task=aux_task)
+        if skipsize > 0:
+            feature_dict = {
+                'input_ids': torch.tensor([f.input_ids for f in features if f.length < skipsize], dtype=torch.long),
+                'attention_mask': torch.tensor([f.attention_mask for f in features if f.length < skipsize], dtype=torch.long),
+                'token_type_ids': torch.tensor([f.token_type_ids for f in features if f.length < skipsize], dtype=torch.long),
+                'labels': torch.tensor([f.label for f in features if f.length < skipsize], dtype=torch.long),
+                'mlm_labels': torch.tensor([f.mlm_labels for f in features if f.length < skipsize], dtype=torch.long),
+                'logits': torch.tensor([f.logits for f in features if f.length < skipsize], dtype=torch.float),
+                'idx': torch.tensor([f.idx for f in features if f.length < skipsize], dtype=torch.long),
+                'len': torch.tensor([f.length for f in features if f.length < skipsize], dtype=torch.long)
+            }
+        else:
+            feature_dict = {
+                'input_ids': torch.tensor([f.input_ids for f in features], dtype=torch.long),
+                'attention_mask': torch.tensor([f.attention_mask for f in features], dtype=torch.long),
+                'token_type_ids': torch.tensor([f.token_type_ids for f in features], dtype=torch.long),
+                'labels': torch.tensor([f.label for f in features], dtype=torch.long),
+                'mlm_labels': torch.tensor([f.mlm_labels for f in features], dtype=torch.long),
+                'logits': torch.tensor([f.logits for f in features], dtype=torch.float),
+                'idx': torch.tensor([f.idx for f in features], dtype=torch.long),
+                'len': torch.tensor([f.length for f in features], dtype=torch.long)
+            }
+
         if self.config.wrapper_type == PLM_WRAPPER:
             feature_dict['perm_mask'] = torch.tensor([f.perm_mask for f in features], dtype=torch.float)
             feature_dict['target_mapping'] = torch.tensor([f.target_mapping for f in features], dtype=torch.float)
 
         if self.task_helper:
             self.task_helper.add_features_to_dict(features, feature_dict)
-
         return DictDataset(**feature_dict)
 
     def _convert_examples_to_features(self, examples: List[InputExample], labelled: bool = True,
-                                      priming: bool = False) -> List[InputFeatures]:
+                                      priming: bool = False, aux_task: bool = False) -> List[InputFeatures]:
         features = []
         for (ex_index, example) in enumerate(examples):
             if ex_index % 10000 == 0:
                 logger.info("Writing example {}".format(ex_index))
-            input_features = self.preprocessor.get_input_features(example, labelled=labelled, priming=priming)
+            if aux_task:
+                input_features = self.aux_preprocessor.get_input_features(example, labelled=labelled, priming=priming)
+            else:
+                input_features = self.preprocessor.get_input_features(example, labelled=labelled, priming=priming)
             if self.task_helper:
                 self.task_helper.add_special_input_features(example, input_features)
             features.append(input_features)
@@ -480,23 +695,32 @@ class TransformerModelWrapper:
 
     def mlm_train_step(self, labeled_batch: Dict[str, torch.Tensor],
                        unlabeled_batch: Optional[Dict[str, torch.Tensor]] = None, lm_training: bool = False,
-                       alpha: float = 0, mlm_logits: bool = False, temperature: float = 1.0, **_) -> torch.Tensor:
+                       alpha: float = 0, mlm_logits: bool = False, temperature: float = 1.0, weight: List = None, aux_task: bool = False, **_) -> torch.Tensor:
         """Perform a MLM training step."""
-
         inputs = self.generate_default_inputs(labeled_batch)
         mlm_labels, labels = labeled_batch['mlm_labels'], labeled_batch['labels']
         outputs = self.model(**inputs)
-        prediction_scores = self.preprocessor.pvp.convert_mlm_logits_to_cls_logits(mlm_labels, outputs[0])
+        if aux_task:
+            prediction_scores = self.aux_preprocessor.pvp.convert_mlm_logits_to_cls_logits(mlm_labels, outputs[0])
+            n_labels = len(self.config.aux_label_list)
+        else:
+            prediction_scores = self.preprocessor.pvp.convert_mlm_logits_to_cls_logits(mlm_labels, outputs[0])
+            n_labels = len(self.config.label_list)
+
         if mlm_logits:
             loss = distillation_loss(prediction_scores, labeled_batch['logits'], temperature)
         else:
-            loss = nn.CrossEntropyLoss()(prediction_scores.view(-1, len(self.config.label_list)), labels.view(-1))
+            loss = nn.CrossEntropyLoss(weight=weight)(prediction_scores.view(-1, n_labels), labels.view(-1))
 
         if lm_training:
             lm_inputs = self.generate_default_inputs(unlabeled_batch)
             lm_inputs['masked_lm_labels'] = unlabeled_batch['mlm_labels']
-            lm_loss = self.model(**lm_inputs)[0]
-            loss = alpha * loss + (1 - alpha) * lm_loss
+            try:
+                lm_loss = self.model(**lm_inputs)[0]
+                loss = alpha * loss + (1 - alpha) * lm_loss
+            except:
+                print("Cuda ran out of memory")
+                print(lm_inputs['input_ids'].shape)
         return loss
 
     def plm_train_step(self, labeled_batch: Dict[str, torch.Tensor], lm_training: bool = False, **_):

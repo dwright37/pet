@@ -763,90 +763,6 @@ class RecordProcessor(DataProcessor):
         return examples
 
 
-class CitationContextProcessor(DataProcessor):
-    """
-    Example for a data processor.
-    """
-
-    # Set this to the name of the task
-    TASK_NAME = "3c-citation-context-classification"
-
-    # Set this to the name of the file containing the train examples
-    TRAIN_FILE_NAME = "train_pet.csv"
-
-    # Set this to the name of the file containing the dev examples
-    DEV_FILE_NAME = "dev_pet.csv"
-
-    # Set this to the name of the file containing the test examples
-    TEST_FILE_NAME = "test_pet.csv"
-
-    # Set this to the name of the file containing the unlabeled examples
-    UNLABELED_FILE_NAME = "unlabelled_pet.csv"
-
-    # Set this to a list of all labels in the train + test data
-    LABELS = ["0", "1", "2", "3", "4", "5"]
-
-    # Set this to the column of the train/test csv files containing the input's text a
-    TEXT_A_COLUMN = 0
-
-    # Set this to the column of the train/test csv files containing the input's text b or to -1 if there is no text b
-    TEXT_B_COLUMN = -1
-
-    # Set this to the column of the train/test csv files containing the input's gold label
-    LABEL_COLUMN = 1
-
-    def get_train_examples(self, data_dir: str) -> List[InputExample]:
-        """
-        This method loads train examples from a file with name `TRAIN_FILE_NAME` in the given directory.
-        :param data_dir: the directory in which the training data can be found
-        :return: a list of train examples
-        """
-        return self._create_examples(os.path.join(data_dir, CitationContextProcessor.TRAIN_FILE_NAME), "train")
-
-    def get_dev_examples(self, data_dir: str) -> List[InputExample]:
-        """
-        This method loads dev examples from a file with name `DEV_FILE_NAME` in the given directory.
-        :param data_dir: the directory in which the dev data can be found
-        :return: a list of dev examples
-        """
-        return self._create_examples(os.path.join(data_dir, CitationContextProcessor.DEV_FILE_NAME), "dev")
-
-    def get_test_examples(self, data_dir) -> List[InputExample]:
-        """
-        This method loads test examples from a file with name `TEST_FILE_NAME` in the given directory.
-        :param data_dir: the directory in which the test data can be found
-        :return: a list of test examples
-        """
-        return self._create_examples(os.path.join(data_dir, CitationContextProcessor.TEST_FILE_NAME), "test")
-
-    def get_unlabeled_examples(self, data_dir) -> List[InputExample]:
-        """
-        This method loads unlabeled examples from a file with name `UNLABELED_FILE_NAME` in the given directory.
-        :param data_dir: the directory in which the unlabeled data can be found
-        :return: a list of unlabeled examples
-        """
-        return self._create_examples(os.path.join(data_dir, CitationContextProcessor.UNLABELED_FILE_NAME), "unlabeled")
-
-    def get_labels(self) -> List[str]:
-        """This method returns all possible labels for the task."""
-        return CitationContextProcessor.LABELS
-
-    def _create_examples(self, path, set_type, max_examples=-1, skip_first=0):
-        """Creates examples for the training and dev sets."""
-        examples = []
-
-        with open(path) as f:
-            reader = csv.reader(f, delimiter=',')
-            for idx, row in enumerate(reader):
-                guid = "%s-%s" % (set_type, idx)
-                label = str(row[CitationContextProcessor.LABEL_COLUMN])
-                text_a = row[CitationContextProcessor.TEXT_A_COLUMN]
-                text_b = row[CitationContextProcessor.TEXT_B_COLUMN] if CitationContextProcessor.TEXT_B_COLUMN >= 0 else None
-                example = InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label)
-                examples.append(example)
-
-        return examples
-
 class ExaggerationDetectionDataProcessor(DataProcessor):
     """
     Example for a data processor.
@@ -930,6 +846,95 @@ class ExaggerationDetectionDataProcessor(DataProcessor):
                 examples.append(example)
 
         return examples
+
+
+class ExaggerationDetectionMultiTaskDataProcessor(DataProcessor):
+    """
+    Example for a data processor.
+    """
+
+    # Set this to the name of the task
+    TASK_NAME = "exaggeration-detection-multi-task"
+
+    # Set this to the name of the file containing the train examples
+    TRAIN_FILE_NAME = "train_pet.csv"
+
+    # Set this to the name of the file containing the dev examples
+    DEV_FILE_NAME = "dev_pet.csv"
+
+    # Set this to the name of the file containing the test examples
+    TEST_FILE_NAME = "test_pet.csv"
+
+    # Set this to the name of the file containing the unlabeled examples
+    UNLABELED_FILE_NAME = "unlabelled_pet.csv"
+
+    # Set this to a list of all labels in the train + test data
+    LABELS = ['0', '1', '2', '3']
+
+    # Set this to the column of the train/test csv files containing the input's text a
+    TEXT_A_COLUMN = 0
+
+    # Set this to the column of the train/test csv files containing the input's text b or to -1 if there is no text b
+    TEXT_B_COLUMN = -1
+
+    # Set this to the column of the train/test csv files containing the input's gold label
+    LABEL_COLUMN = 1
+
+    TYPE_COLUMN = 2
+
+    def get_train_examples(self, data_dir: str) -> List[InputExample]:
+        """
+        This method loads train examples from a file with name `TRAIN_FILE_NAME` in the given directory.
+        :param data_dir: the directory in which the training data can be found
+        :return: a list of train examples
+        """
+        return self._create_examples(os.path.join(data_dir, ExaggerationDetectionMultiTaskDataProcessor.TRAIN_FILE_NAME), "train")
+
+    def get_dev_examples(self, data_dir: str) -> List[InputExample]:
+        """
+        This method loads dev examples from a file with name `DEV_FILE_NAME` in the given directory.
+        :param data_dir: the directory in which the dev data can be found
+        :return: a list of dev examples
+        """
+        return self._create_examples(os.path.join(data_dir, ExaggerationDetectionMultiTaskDataProcessor.DEV_FILE_NAME), "dev")
+
+    def get_test_examples(self, data_dir) -> List[InputExample]:
+        """
+        This method loads test examples from a file with name `TEST_FILE_NAME` in the given directory.
+        :param data_dir: the directory in which the test data can be found
+        :return: a list of test examples
+        """
+        return self._create_examples(os.path.join(data_dir, ExaggerationDetectionMultiTaskDataProcessor.TEST_FILE_NAME), "test")
+
+    def get_unlabeled_examples(self, data_dir) -> List[InputExample]:
+        """
+        This method loads unlabeled examples from a file with name `UNLABELED_FILE_NAME` in the given directory.
+        :param data_dir: the directory in which the unlabeled data can be found
+        :return: a list of unlabeled examples
+        """
+        return self._create_examples(os.path.join(data_dir, ExaggerationDetectionMultiTaskDataProcessor.UNLABELED_FILE_NAME), "unlabeled")
+
+    def get_labels(self) -> List[str]:
+        """This method returns all possible labels for the task."""
+        return ExaggerationDetectionMultiTaskDataProcessor.LABELS
+
+    def _create_examples(self, path, set_type, max_examples=-1, skip_first=0):
+        """Creates examples for the training and dev sets."""
+        examples = []
+
+        with open(path) as f:
+            reader = csv.reader(f, delimiter=',')
+            for idx, row in enumerate(reader):
+                guid = "%s-%s" % (set_type, idx)
+                label = row[ExaggerationDetectionMultiTaskDataProcessor.LABEL_COLUMN]
+                text_a = row[ExaggerationDetectionMultiTaskDataProcessor.TEXT_A_COLUMN]
+                text_b = row[ExaggerationDetectionMultiTaskDataProcessor.TEXT_B_COLUMN] if ExaggerationDetectionMultiTaskDataProcessor.TEXT_B_COLUMN >= 0 else None
+                meta = {'type': row[ExaggerationDetectionMultiTaskDataProcessor.TYPE_COLUMN]}
+                example = InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label, meta=meta)
+                examples.append(example)
+
+        return examples
+
 
 class ExaggerationNLIDetectionDataProcessor(DataProcessor):
     """
@@ -1024,7 +1029,98 @@ class ExaggerationNLIDetectionDataProcessor(DataProcessor):
                 example = InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label, logits=logits)
                 examples.append(example)
         return examples
-    
+
+
+class ExaggerationNLIDetectionSentenceDataProcessor(DataProcessor):
+    """
+    Example for a data processor.
+    """
+
+    # Set this to the name of the task
+    TASK_NAME = "exaggeration-detection-nli-sentence"
+
+    # Set this to the name of the file containing the train examples
+    TRAIN_FILE_NAME = "train_pet.jsonl"
+
+    # Set this to the name of the file containing the dev examples
+    DEV_FILE_NAME = "dev_pet.jsonl"
+
+    # Set this to the name of the file containing the test examples
+    TEST_FILE_NAME = "test_pet.jsonl"
+
+    # Set this to the name of the file containing the unlabeled examples
+    UNLABELED_FILE_NAME = "unlabelled_pet.jsonl"
+
+    # Set this to a list of all labels in the train + test data
+    LABELS = ['0', '1', '2']
+
+    # Set this to the column of the train/test csv files containing the input's text a
+    TEXT_A_COLUMN = 'text'
+
+    # Set this to the column of the train/test csv files containing the input's text b or to -1 if there is no text b
+    TEXT_B_COLUMN = 'text_pair'
+
+    # Set this to the column of the train/test csv files containing the input's gold label
+    LABEL_COLUMN = 'label'
+
+    # Set this to the column of the train/test csv files containing the input's gold label
+    LOGITS_COLUMN = 'label'
+
+    def get_train_examples(self, data_dir: str) -> List[InputExample]:
+        """
+        This method loads train examples from a file with name `TRAIN_FILE_NAME` in the given directory.
+        :param data_dir: the directory in which the training data can be found
+        :return: a list of train examples
+        """
+        return self._create_examples(os.path.join(data_dir, ExaggerationNLIDetectionSentenceDataProcessor.TRAIN_FILE_NAME),
+                                     "train")
+
+    def get_dev_examples(self, data_dir: str) -> List[InputExample]:
+        """
+        This method loads dev examples from a file with name `DEV_FILE_NAME` in the given directory.
+        :param data_dir: the directory in which the dev data can be found
+        :return: a list of dev examples
+        """
+        return self._create_examples(os.path.join(data_dir, ExaggerationNLIDetectionSentenceDataProcessor.DEV_FILE_NAME), "dev")
+
+    def get_test_examples(self, data_dir) -> List[InputExample]:
+        """
+        This method loads test examples from a file with name `TEST_FILE_NAME` in the given directory.
+        :param data_dir: the directory in which the test data can be found
+        :return: a list of test examples
+        """
+        return self._create_examples(os.path.join(data_dir, ExaggerationNLIDetectionSentenceDataProcessor.TEST_FILE_NAME),
+                                     "test")
+
+    def get_unlabeled_examples(self, data_dir) -> List[InputExample]:
+        """
+        This method loads unlabeled examples from a file with name `UNLABELED_FILE_NAME` in the given directory.
+        :param data_dir: the directory in which the unlabeled data can be found
+        :return: a list of unlabeled examples
+        """
+        return self._create_examples(os.path.join(data_dir, ExaggerationNLIDetectionSentenceDataProcessor.UNLABELED_FILE_NAME),
+                                     "unlabeled")
+
+    def get_labels(self) -> List[str]:
+        """This method returns all possible labels for the task."""
+        return ExaggerationNLIDetectionSentenceDataProcessor.LABELS
+
+    def _create_examples(self, path, set_type, max_examples=-1, skip_first=0):
+        """Creates examples for the training and dev sets."""
+        examples = []
+
+        with open(path) as f:
+            for idx, l in enumerate(f):
+                guid = "%s-%s" % (set_type, idx)
+                row = json.loads(l)
+                label = str(row[ExaggerationNLIDetectionSentenceDataProcessor.LABEL_COLUMN])
+                text_a = row[ExaggerationNLIDetectionSentenceDataProcessor.TEXT_A_COLUMN]
+                text_b = row[ExaggerationNLIDetectionSentenceDataProcessor.TEXT_B_COLUMN]
+                example = InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label)
+                examples.append(example)
+        return examples
+
+
 
 class ConclusionDetectionDataProcessor(DataProcessor):
     """
@@ -1107,11 +1203,191 @@ class ConclusionDetectionDataProcessor(DataProcessor):
                 row = json.loads(l)
                 #label = row[ConclusionDetectionDataProcessor.LABEL_COLUMN]
                 label = None if set_type != 'unlabeled' else -1
-                logits = row[ExaggerationNLIDetectionDataProcessor.LOGITS_COLUMN] if set_type != 'unlabeled' else None
+                logits = row[ConclusionDetectionDataProcessor.LOGITS_COLUMN] if set_type != 'unlabeled' else None
                 text_a = row[ConclusionDetectionDataProcessor.TEXT_A_COLUMN]
                 #text_b = row[ConclusionDetectionDataProcessor.TEXT_B_COLUMN] if ConclusionDetectionDataProcessor.TEXT_B_COLUMN >= 0 else None
                 text_b = None    
                 example = InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label, logits=logits)
+                examples.append(example)
+
+        return examples
+
+class ConclusionDetectionLabeledDataProcessor(DataProcessor):
+    """
+    Example for a data processor.
+    """
+
+    # Set this to the name of the task
+    TASK_NAME = "conclusion-detection-labeled"
+
+    # Set this to the name of the file containing the train examples
+    TRAIN_FILE_NAME = "train_pet.jsonl"
+
+    # Set this to the name of the file containing the dev examples
+    DEV_FILE_NAME = "dev_pet.jsonl"
+
+    # Set this to the name of the file containing the test examples
+    TEST_FILE_NAME = "test_pet.jsonl"
+
+    # Set this to the name of the file containing the unlabeled examples
+    UNLABELED_FILE_NAME = "unlabelled_pet.jsonl"
+
+    # Set this to a list of all labels in the train + test data
+    LABELS = ['0', '1']
+
+    # Set this to the column of the train/test csv files containing the input's text a
+    TEXT_A_COLUMN = 'text'
+
+    # Set this to the column of the train/test csv files containing the input's text b or to -1 if there is no text b
+    TEXT_B_COLUMN = -1
+
+    # Set this to the column of the train/test csv files containing the input's gold label
+    LABEL_COLUMN = 'label'
+
+    # Set this to the column of the train/test csv files containing the input's gold label
+    LOGITS_COLUMN = 'label'
+
+    def get_train_examples(self, data_dir: str) -> List[InputExample]:
+        """
+        This method loads train examples from a file with name `TRAIN_FILE_NAME` in the given directory.
+        :param data_dir: the directory in which the training data can be found
+        :return: a list of train examples
+        """
+        return self._create_examples(os.path.join(data_dir, ConclusionDetectionLabeledDataProcessor.TRAIN_FILE_NAME),
+                                     "train")
+
+    def get_dev_examples(self, data_dir: str) -> List[InputExample]:
+        """
+        This method loads dev examples from a file with name `DEV_FILE_NAME` in the given directory.
+        :param data_dir: the directory in which the dev data can be found
+        :return: a list of dev examples
+        """
+        return self._create_examples(os.path.join(data_dir, ConclusionDetectionLabeledDataProcessor.DEV_FILE_NAME), "dev")
+
+    def get_test_examples(self, data_dir) -> List[InputExample]:
+        """
+        This method loads test examples from a file with name `TEST_FILE_NAME` in the given directory.
+        :param data_dir: the directory in which the test data can be found
+        :return: a list of test examples
+        """
+        return self._create_examples(os.path.join(data_dir, ConclusionDetectionLabeledDataProcessor.TEST_FILE_NAME),
+                                     "test")
+
+    def get_unlabeled_examples(self, data_dir) -> List[InputExample]:
+        """
+        This method loads unlabeled examples from a file with name `UNLABELED_FILE_NAME` in the given directory.
+        :param data_dir: the directory in which the unlabeled data can be found
+        :return: a list of unlabeled examples
+        """
+        return self._create_examples(os.path.join(data_dir, ConclusionDetectionLabeledDataProcessor.UNLABELED_FILE_NAME),
+                                     "unlabeled")
+
+    def get_labels(self) -> List[str]:
+        """This method returns all possible labels for the task."""
+        return ConclusionDetectionLabeledDataProcessor.LABELS
+
+    def _create_examples(self, path, set_type, max_examples=-1, skip_first=0):
+        """Creates examples for the training and dev sets."""
+        examples = []
+
+        with open(path) as f:
+            for idx, l in enumerate(f):
+                guid = "%s-%s" % (set_type, idx)
+                row = json.loads(l)
+                label = str(row[ConclusionDetectionLabeledDataProcessor.LABEL_COLUMN])
+                text_a = row[ConclusionDetectionLabeledDataProcessor.TEXT_A_COLUMN]
+                text_b = None
+                example = InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label)
+                examples.append(example)
+
+        return examples
+
+class ConclusionDetectionLabeledDataProcessor(DataProcessor):
+    """
+    Example for a data processor.
+    """
+
+    # Set this to the name of the task
+    TASK_NAME = "conclusion-detection-labeled"
+
+    # Set this to the name of the file containing the train examples
+    TRAIN_FILE_NAME = "train_pet.jsonl"
+
+    # Set this to the name of the file containing the dev examples
+    DEV_FILE_NAME = "dev_pet.jsonl"
+
+    # Set this to the name of the file containing the test examples
+    TEST_FILE_NAME = "test_pet.jsonl"
+
+    # Set this to the name of the file containing the unlabeled examples
+    UNLABELED_FILE_NAME = "unlabelled_pet.jsonl"
+
+    # Set this to a list of all labels in the train + test data
+    LABELS = ['0', '1']
+
+    # Set this to the column of the train/test csv files containing the input's text a
+    TEXT_A_COLUMN = 'text'
+
+    # Set this to the column of the train/test csv files containing the input's text b or to -1 if there is no text b
+    TEXT_B_COLUMN = -1
+
+    # Set this to the column of the train/test csv files containing the input's gold label
+    LABEL_COLUMN = 'label'
+
+    # Set this to the column of the train/test csv files containing the input's gold label
+    LOGITS_COLUMN = 'label'
+
+    def get_train_examples(self, data_dir: str) -> List[InputExample]:
+        """
+        This method loads train examples from a file with name `TRAIN_FILE_NAME` in the given directory.
+        :param data_dir: the directory in which the training data can be found
+        :return: a list of train examples
+        """
+        return self._create_examples(os.path.join(data_dir, ConclusionDetectionLabeledDataProcessor.TRAIN_FILE_NAME),
+                                     "train")
+
+    def get_dev_examples(self, data_dir: str) -> List[InputExample]:
+        """
+        This method loads dev examples from a file with name `DEV_FILE_NAME` in the given directory.
+        :param data_dir: the directory in which the dev data can be found
+        :return: a list of dev examples
+        """
+        return self._create_examples(os.path.join(data_dir, ConclusionDetectionLabeledDataProcessor.DEV_FILE_NAME), "dev")
+
+    def get_test_examples(self, data_dir) -> List[InputExample]:
+        """
+        This method loads test examples from a file with name `TEST_FILE_NAME` in the given directory.
+        :param data_dir: the directory in which the test data can be found
+        :return: a list of test examples
+        """
+        return self._create_examples(os.path.join(data_dir, ConclusionDetectionLabeledDataProcessor.TEST_FILE_NAME),
+                                     "test")
+
+    def get_unlabeled_examples(self, data_dir) -> List[InputExample]:
+        """
+        This method loads unlabeled examples from a file with name `UNLABELED_FILE_NAME` in the given directory.
+        :param data_dir: the directory in which the unlabeled data can be found
+        :return: a list of unlabeled examples
+        """
+        return self._create_examples(os.path.join(data_dir, ConclusionDetectionLabeledDataProcessor.UNLABELED_FILE_NAME),
+                                     "unlabeled")
+
+    def get_labels(self) -> List[str]:
+        """This method returns all possible labels for the task."""
+        return ConclusionDetectionLabeledDataProcessor.LABELS
+
+    def _create_examples(self, path, set_type, max_examples=-1, skip_first=0):
+        """Creates examples for the training and dev sets."""
+        examples = []
+
+        with open(path) as f:
+            for idx, l in enumerate(f):
+                guid = "%s-%s" % (set_type, idx)
+                row = json.loads(l)
+                label = str(row[ConclusionDetectionLabeledDataProcessor.LABEL_COLUMN])
+                text_a = row[ConclusionDetectionLabeledDataProcessor.TEXT_A_COLUMN]
+                text_b = None
+                example = InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label)
                 examples.append(example)
 
         return examples
@@ -1137,10 +1413,14 @@ PROCESSORS = {
     "record": RecordProcessor,
     "ax-g": AxGProcessor,
     "ax-b": AxBProcessor,
-    "3c-citation-context-classification": CitationContextProcessor,
     ExaggerationDetectionDataProcessor.TASK_NAME: ExaggerationDetectionDataProcessor,
     ExaggerationNLIDetectionDataProcessor.TASK_NAME: ExaggerationNLIDetectionDataProcessor,
-    ConclusionDetectionDataProcessor.TASK_NAME: ConclusionDetectionDataProcessor
+    ExaggerationNLIDetectionSentenceDataProcessor.TASK_NAME: ExaggerationNLIDetectionSentenceDataProcessor,
+    ConclusionDetectionDataProcessor.TASK_NAME: ConclusionDetectionDataProcessor,
+    'exaggeration-detection-nli-from-petal': ExaggerationNLIDetectionSentenceDataProcessor,
+    'exaggeration-detection-nli-from-petal-full': ExaggerationNLIDetectionSentenceDataProcessor,
+    ConclusionDetectionLabeledDataProcessor.TASK_NAME: ConclusionDetectionLabeledDataProcessor,
+    ExaggerationDetectionMultiTaskDataProcessor.TASK_NAME: ExaggerationDetectionMultiTaskDataProcessor
 }  # type: Dict[str,Callable[[],DataProcessor]]
 
 TASK_HELPERS = {
@@ -1206,7 +1486,8 @@ def load_examples(task, data_dir: str, set_type: str, *_, num_examples: int = No
             limited_examples.add(example)
         examples = limited_examples.to_list()
 
-    #label_distribution = Counter(example.label for example in examples)
-    #logger.info(f"Returning {len(examples)} {set_type} examples with label dist.: {list(label_distribution.items())}")
+    if len(examples) > 0 and not isinstance(examples[0].label, List):
+        label_distribution = Counter(example.label for example in examples)
+        logger.info(f"Returning {len(examples)} {set_type} examples with label dist.: {list(label_distribution.items())}")
 
     return examples

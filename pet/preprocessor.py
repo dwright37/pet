@@ -25,7 +25,7 @@ class Preprocessor(ABC):
     processed by the model being used.
     """
 
-    def __init__(self, wrapper, task_name, pattern_id: int = 0, verbalizer_file: str = None):
+    def __init__(self, wrapper, task_name, pattern_id: int = 0, verbalizer_file: str = None, aux_task: bool = False):
         """
         Create a new preprocessor.
 
@@ -35,8 +35,12 @@ class Preprocessor(ABC):
         :param verbalizer_file: path to a file containing a verbalizer that overrides the default verbalizer
         """
         self.wrapper = wrapper
-        self.pvp = PVPS[task_name](self.wrapper, pattern_id, verbalizer_file)  # type: PVP
-        self.label_map = {label: i for i, label in enumerate(self.wrapper.config.label_list)}
+        self.pvp = PVPS[task_name](self.wrapper, pattern_id, verbalizer_file, aux_task=aux_task)  # type: PVP
+        if aux_task:
+            self.label_map = {label: i for i, label in enumerate(self.wrapper.config.aux_label_list)}
+        else:
+            self.label_map = {label: i for i, label in enumerate(self.wrapper.config.label_list)}
+        self.aux_task = aux_task
 
     @abstractmethod
     def get_input_features(self, example: InputExample, labelled: bool, priming: bool = False,

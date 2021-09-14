@@ -37,7 +37,8 @@ def load_pet_configs(args) -> Tuple[WrapperConfig, pet.TrainConfig, pet.EvalConf
     model_cfg = WrapperConfig(model_type=args.model_type, model_name_or_path=args.model_name_or_path,
                               wrapper_type=args.wrapper_type, task_name=args.task_name, label_list=args.label_list,
                               max_seq_length=args.pet_max_seq_length, verbalizer_file=args.verbalizer_file,
-                              cache_dir=args.cache_dir)
+                              cache_dir=args.cache_dir, aux_task_name=args.aux_task_name, aux_label_list=args.aux_label_list,
+                              aux_verbalizer_file=args.aux_verbalizer_file)
 
     train_cfg = pet.TrainConfig(device=args.device, per_gpu_train_batch_size=args.pet_per_gpu_train_batch_size,
                                 per_gpu_unlabeled_batch_size=args.pet_per_gpu_unlabeled_batch_size, n_gpu=args.n_gpu,
@@ -46,7 +47,7 @@ def load_pet_configs(args) -> Tuple[WrapperConfig, pet.TrainConfig, pet.EvalConf
                                 weight_decay=args.weight_decay, learning_rate=args.learning_rate,
                                 adam_epsilon=args.adam_epsilon, warmup_steps=args.warmup_steps,
                                 max_grad_norm=args.max_grad_norm, lm_training=args.lm_training, alpha=args.alpha,
-                                mlm_logits=args.soft_labels, temperature=args.temperature)
+                                mlm_logits=args.soft_labels, temperature=args.temperature, balance_class_weight=args.balance_class_weight)
 
     eval_cfg = pet.EvalConfig(device=args.device, n_gpu=args.n_gpu, metrics=args.metrics,
                               per_gpu_eval_batch_size=args.pet_per_gpu_eval_batch_size,
@@ -63,7 +64,7 @@ def load_sequence_classifier_configs(args) -> Tuple[WrapperConfig, pet.TrainConf
     model_cfg = WrapperConfig(model_type=args.model_type, model_name_or_path=args.model_name_or_path,
                               wrapper_type=SEQUENCE_CLASSIFIER_WRAPPER, task_name=args.task_name,
                               label_list=args.label_list, max_seq_length=args.sc_max_seq_length,
-                              verbalizer_file=args.verbalizer_file, cache_dir=args.cache_dir)
+                              verbalizer_file=args.verbalizer_file, cache_dir=args.cache_dir, aux_task_name=args.aux_task_name)
 
     train_cfg = pet.TrainConfig(device=args.device, per_gpu_train_batch_size=args.sc_per_gpu_train_batch_size,
                                 per_gpu_unlabeled_batch_size=args.sc_per_gpu_unlabeled_batch_size, n_gpu=args.n_gpu,
@@ -97,12 +98,18 @@ def main():
                         help="The training method to use. Either regular sequence classification, PET or iPET.")
     parser.add_argument("--data_dir", default=None, type=str, required=True,
                         help="The input data dir. Should contain the data files for the task.")
+    parser.add_argument("--aux_data_dir", default=None, type=str, required=False,
+                        help="The auxiliary input data dir. Should contain the data files for the auxiliary task.")
+
     parser.add_argument("--model_type", default=None, type=str, required=True, choices=MODEL_CLASSES.keys(),
                         help="The type of the pretrained language model to use")
     parser.add_argument("--model_name_or_path", default=None, type=str, required=True,
                         help="Path to the pre-trained model or shortcut name")
     parser.add_argument("--task_name", default=None, type=str, required=True, choices=PROCESSORS.keys(),
                         help="The name of the task to train/evaluate on")
+    parser.add_argument("--aux_task_name", default=None, type=str, required=False, choices=PROCESSORS.keys(),
+                        help="The name of the auxiliary task to train on")
+
     parser.add_argument("--output_dir", default=None, type=str, required=True,
                         help="The output directory where the model predictions and checkpoints will be written")
 
@@ -112,6 +119,9 @@ def main():
                              "for a permuted language model like XLNet (only for PET)")
     parser.add_argument("--pattern_ids", default=[0], type=int, nargs='+',
                         help="The ids of the PVPs to be used (only for PET)")
+    parser.add_argument("--aux_pattern_ids", default=[0], type=int, nargs='+',
+                        help="The ids of the PVPs to be used for the auxiliary task (only for PET)")
+
     parser.add_argument("--lm_training", action='store_true',
                         help="Whether to use language modeling as auxiliary task (only for PET)")
     parser.add_argument("--alpha", default=0.9999, type=float,
@@ -121,6 +131,8 @@ def main():
     parser.add_argument("--temperature", default=2, type=float,
                         help="Temperature used for combining PVPs (only for PET)")
     parser.add_argument("--verbalizer_file", default=None,
+                        help="The path to a file to override default verbalizers (only for PET)")
+    parser.add_argument("--aux_verbalizer_file", default=None, required=False,
                         help="The path to a file to override default verbalizers (only for PET)")
     parser.add_argument("--reduction", default='wmean', choices=['wmean', 'mean'],
                         help="Reduction strategy for merging predictions from multiple PET models. Select either "
@@ -212,6 +224,10 @@ def main():
                         help="Whether to perform training")
     parser.add_argument('--do_eval', action='store_true',
                         help="Whether to perform evaluation")
+    parser.add_argument('--do_multi_task', action='store_true',
+                        help="Whether to use multi-task learning")
+    parser.add_argument('--balance_class_weight', action='store_true',
+                        help="Whether to balance class weights during training")
     parser.add_argument('--priming', action='store_true',
                         help="Whether to use priming for evaluation")
     parser.add_argument("--eval_set", choices=['dev', 'test'], default='dev',
@@ -251,6 +267,19 @@ def main():
     unlabeled_data = load_examples(
         args.task_name, args.data_dir, UNLABELED_SET, num_examples=args.unlabeled_examples)
 
+    if args.do_multi_task:
+        args.aux_task_name = args.aux_task_name.lower()
+        if args.aux_task_name not in PROCESSORS:
+            raise ValueError("Task '{}' not found".format(args.aux_task_name))
+        aux_processor = PROCESSORS[args.aux_task_name]()
+        args.aux_label_list = aux_processor.get_labels()
+
+        aux_data = load_examples(
+            args.aux_task_name, args.aux_data_dir, TRAIN_SET, num_examples=-1)
+    else:
+        aux_data = None
+        args.aux_label_list = None
+
     args.metrics = METRICS.get(args.task_name, DEFAULT_METRICS)
 
     pet_model_cfg, pet_train_cfg, pet_eval_cfg = load_pet_configs(args)
@@ -263,7 +292,7 @@ def main():
                       ensemble_repetitions=args.pet_repetitions, final_repetitions=args.sc_repetitions,
                       reduction=args.reduction, train_data=train_data, unlabeled_data=unlabeled_data,
                       eval_data=eval_data, do_train=args.do_train, do_eval=args.do_eval,
-                      no_distillation=args.no_distillation, seed=args.seed)
+                      no_distillation=args.no_distillation, seed=args.seed, multi_task=args.do_multi_task, aux_data=aux_data, aux_pattern_ids=args.aux_pattern_ids)
 
     elif args.method == 'ipet':
         pet.train_ipet(pet_model_cfg, pet_train_cfg, pet_eval_cfg, ipet_cfg, sc_model_cfg, sc_train_cfg, sc_eval_cfg,

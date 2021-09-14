@@ -58,7 +58,7 @@ class TrainConfig(PetConfig):
                  n_gpu: int = 1, num_train_epochs: int = 3, max_steps: int = -1, gradient_accumulation_steps: int = 1,
                  weight_decay: float = 0.0, learning_rate: float = 5e-5, adam_epsilon: float = 1e-8,
                  warmup_steps: int = 0, max_grad_norm: float = 1, lm_training: bool = False, use_logits: bool = False,
-                 alpha: float = 0.9999, temperature: float = 1, mlm_logits: bool = False):
+                 alpha: float = 0.9999, temperature: float = 1, mlm_logits: bool = False, balance_class_weight: bool=False):
         """
         Create a new training config.
 
@@ -96,6 +96,7 @@ class TrainConfig(PetConfig):
         self.alpha = alpha
         self.temperature = temperature
         self.mlm_logits = mlm_logits
+        self.balance_class_weight = balance_class_weight
 
 
 class EvalConfig(PetConfig):
@@ -220,7 +221,8 @@ def train_pet(ensemble_model_config: WrapperConfig, ensemble_train_config: Train
               final_eval_config: EvalConfig, pattern_ids: List[int], output_dir: str, ensemble_repetitions: int = 3,
               final_repetitions: int = 1, reduction: str = 'wmean', train_data: List[InputExample] = None,
               unlabeled_data: List[InputExample] = None, eval_data: List[InputExample] = None, do_train: bool = True,
-              do_eval: bool = True, no_distillation: bool = False, seed: int = 42):
+              do_eval: bool = True, no_distillation: bool = False, seed: int = 42, multi_task: bool = False, aux_data: List[InputExample] = None,
+              aux_pattern_ids: List[int] = [0]):
     """
     Train and evaluate a new PET model for a given task.
 
@@ -248,10 +250,9 @@ def train_pet(ensemble_model_config: WrapperConfig, ensemble_train_config: Train
     train_pet_ensemble(ensemble_model_config, ensemble_train_config, ensemble_eval_config, pattern_ids, output_dir,
                        repetitions=ensemble_repetitions, train_data=train_data, unlabeled_data=unlabeled_data,
                        eval_data=eval_data, do_train=do_train, do_eval=do_eval,
-                       save_unlabeled_logits=not no_distillation, seed=seed)
+                       save_unlabeled_logits=True, seed=seed, multi_task=multi_task, aux_data=aux_data, aux_pattern_ids=aux_pattern_ids)
+                       #save_unlabeled_logits=not no_distillation, seed=seed)
 
-    if no_distillation:
-        return
 
     # Step 2: Merge the annotations created by each individual model
     logits_file = os.path.join(output_dir, 'unlabeled_logits.txt')
@@ -261,6 +262,9 @@ def train_pet(ensemble_model_config: WrapperConfig, ensemble_train_config: Train
     logger.info("Got {} logits from file {}".format(len(logits), logits_file))
     for example, example_logits in zip(unlabeled_data, logits):
         example.logits = example_logits
+
+    if no_distillation:
+        return
 
     # Step 3: Train the final sequence classifier model
     final_model_config.wrapper_type = SEQUENCE_CLASSIFIER_WRAPPER
@@ -301,7 +305,8 @@ def train_pet_ensemble(model_config: WrapperConfig, train_config: TrainConfig, e
                        pattern_ids: List[int], output_dir: str, ipet_data_dir: str = None, repetitions: int = 3,
                        train_data: List[InputExample] = None, unlabeled_data: List[InputExample] = None,
                        eval_data: List[InputExample] = None, do_train: bool = True, do_eval: bool = True,
-                       save_unlabeled_logits: bool = False, seed: int = 42):
+                       save_unlabeled_logits: bool = False, seed: int = 42, multi_task: bool = False, aux_data: List[InputExample] = None,
+                        aux_pattern_ids: List[int] = [0]):
     """
     Train and evaluate an ensemble of PET models without knowledge distillation.
 
@@ -340,7 +345,11 @@ def train_pet_ensemble(model_config: WrapperConfig, train_config: TrainConfig, e
             if not os.path.exists(pattern_iter_output_dir):
                 os.makedirs(pattern_iter_output_dir)
 
+            device = torch.device(train_config.device if train_config.device else "cuda:0" if torch.cuda.is_available() else "cpu")
             wrapper = init_model(model_config)
+            if train_config.n_gpu > 1:
+                wrapper.model = torch.nn.DataParallel(wrapper.model, device_ids=[0, 1])
+            wrapper.model.to(device)
 
             # Training
             if do_train:
@@ -354,7 +363,8 @@ def train_pet_ensemble(model_config: WrapperConfig, train_config: TrainConfig, e
 
                 results_dict.update(train_single_model(wrapper, train_data, train_config, eval_config,
                                                        ipet_train_data=ipet_train_data,
-                                                       unlabeled_data=unlabeled_data))
+                                                       unlabeled_data=unlabeled_data,
+                                                       aux_data=aux_data))
 
                 with open(os.path.join(pattern_iter_output_dir, 'results.txt'), 'w') as fh:
                     fh.write(str(results_dict))
@@ -409,7 +419,7 @@ def train_pet_ensemble(model_config: WrapperConfig, train_config: TrainConfig, e
 
 def train_single_model(model: TransformerModelWrapper, train_data: List[InputExample], config: TrainConfig,
                        eval_config: EvalConfig = None, ipet_train_data: List[InputExample] = None,
-                       unlabeled_data: List[InputExample] = None, return_train_set_results: bool = True):
+                       unlabeled_data: List[InputExample] = None, return_train_set_results: bool = True, aux_data: List[InputExample] = None):
     """
     Train a single model.
 
@@ -424,23 +434,28 @@ def train_single_model(model: TransformerModelWrapper, train_data: List[InputExa
     :return: a dictionary containing the global step, average loss and (optionally) results on the train set
     """
 
-    device = torch.device(config.device if config.device else "cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(config.device if config.device else "cuda:0" if torch.cuda.is_available() else "cpu")
     if not ipet_train_data:
         ipet_train_data = []
 
     results_dict = {}
 
-    model.model.to(device)
+
 
     if train_data and return_train_set_results:
         results_dict['train_set_before_training'] = evaluate(model, train_data, eval_config)['scores']['acc']
 
     all_train_data = train_data + ipet_train_data
+    if aux_data is not None:
+        all_train_data = [all_train_data, aux_data]
+        train_fn = model.train_multi_task
+    else:
+        train_fn = model.train
 
     if not all_train_data and not config.use_logits:
         logger.warning('Training method was called without training examples')
     else:
-        global_step, tr_loss = model.train(
+        global_step, tr_loss = train_fn(
             all_train_data, device,
             per_gpu_train_batch_size=config.per_gpu_train_batch_size,
             per_gpu_unlabeled_batch_size=config.per_gpu_unlabeled_batch_size,
@@ -458,7 +473,8 @@ def train_single_model(model: TransformerModelWrapper, train_data: List[InputExa
             use_logits=config.use_logits,
             alpha=config.alpha,
             temperature=config.temperature,
-            mlm_logits=config.mlm_logits
+            mlm_logits=config.mlm_logits,
+            balance_class_weight=config.balance_class_weight
         )
         results_dict['global_step'] = global_step
         results_dict['average_loss'] = tr_loss
@@ -486,9 +502,9 @@ def evaluate(model: TransformerModelWrapper, eval_data: List[InputExample], conf
             example.meta['priming_data'] = priming_data
 
     metrics = config.metrics if config.metrics else ['acc']
-    device = torch.device(config.device if config.device else "cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(config.device if config.device else "cuda:0" if torch.cuda.is_available() else "cpu")
 
-    model.model.to(device)
+
     results = model.eval(eval_data, device, per_gpu_eval_batch_size=config.per_gpu_eval_batch_size,
                          n_gpu=config.n_gpu, decoding_strategy=config.decoding_strategy, priming=config.priming)
 
@@ -597,12 +613,15 @@ def merge_logits_lists(logits_lists: List[LogitsList], reduction: str = 'mean') 
 
     assert len(set(len(ll.logits) for ll in logits_lists)) == 1
     logits = np.array([ll.logits for ll in logits_lists])
+    if 'zscore' in reduction:
+        # Try z-scoring
+        logits = (logits - np.mean(logits)) / np.std(logits)
     weights = np.array([ll.score for ll in logits_lists])
 
-    if reduction == 'mean':
-        logits = np.mean(logits, axis=0).tolist()
-    elif reduction == 'wmean':
+    if 'wmean' in reduction and sum(weights) > 0:
         logits = np.average(logits, axis=0, weights=weights).tolist()
+    elif 'mean' in reduction:
+        logits = np.mean(logits, axis=0).tolist()
     else:
         raise ValueError("Reduction strategy '{}' not implemented".format(reduction))
 

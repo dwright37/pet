@@ -18,6 +18,7 @@ import string
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from typing import Tuple, List, Union, Dict
+import json
 
 import torch
 from transformers import PreTrainedTokenizer, GPT2Tokenizer
@@ -40,7 +41,7 @@ class PVP(ABC):
     custom implementation of a PVP.
     """
 
-    def __init__(self, wrapper, pattern_id: int = 0, verbalizer_file: str = None, seed: int = 42):
+    def __init__(self, wrapper, pattern_id: int = 0, verbalizer_file: str = None, seed: int = 42, aux_task: bool = False):
         """
         Create a new PVP.
 
@@ -52,18 +53,21 @@ class PVP(ABC):
         self.wrapper = wrapper
         self.pattern_id = pattern_id
         self.rng = random.Random(seed)
+        self.aux_task = aux_task
+        self.wrapper_task_name = self.wrapper.config.aux_task_name if aux_task else self.wrapper.config.task_name
+        self.wrapper_label_list = self.wrapper.config.aux_label_list if aux_task else self.wrapper.config.label_list
 
         if verbalizer_file:
             self.verbalize = PVP._load_verbalizer_from_file(verbalizer_file, self.pattern_id)
 
-        use_multimask = (self.wrapper.config.task_name in TASK_HELPERS) and (
-            issubclass(TASK_HELPERS[self.wrapper.config.task_name], MultiMaskTaskHelper)
+        use_multimask = (self.wrapper_task_name  in TASK_HELPERS) and (
+            issubclass(TASK_HELPERS[self.wrapper_task_name ], MultiMaskTaskHelper)
         )
         if not use_multimask and self.wrapper.config.wrapper_type in [wrp.MLM_WRAPPER, wrp.PLM_WRAPPER]:
             self.mlm_logits_to_cls_logits_tensor = self._build_mlm_logits_to_cls_logits_tensor()
 
     def _build_mlm_logits_to_cls_logits_tensor(self):
-        label_list = self.wrapper.config.label_list
+        label_list = self.wrapper_label_list
         m2c_tensor = torch.ones([len(label_list), self.max_num_verbalizers], dtype=torch.long) * -1
 
         for label_idx, label in enumerate(label_list):
@@ -87,7 +91,7 @@ class PVP(ABC):
     @property
     def max_num_verbalizers(self) -> int:
         """Return the maximum number of verbalizers across all labels"""
-        return max(len(self.verbalize(label)) for label in self.wrapper.config.label_list)
+        return max(len(self.verbalize(label)) for label in self.wrapper_label_list)
 
     @staticmethod
     def shortenable(s):
@@ -217,7 +221,7 @@ class PVP(ABC):
     def _convert_single_mlm_logits_to_cls_logits(self, logits: torch.Tensor) -> torch.Tensor:
         m2c = self.mlm_logits_to_cls_logits_tensor.to(logits.device)
         # filler_len.shape() == max_fillers
-        filler_len = torch.tensor([len(self.verbalize(label)) for label in self.wrapper.config.label_list],
+        filler_len = torch.tensor([len(self.verbalize(label)) for label in self.wrapper_label_list],
                                   dtype=torch.float)
         filler_len = filler_len.to(logits.device)
 
@@ -242,17 +246,18 @@ class PVP(ABC):
         current_pattern_id = None
 
         with open(path, 'r') as fh:
-            for line in fh.read().splitlines():
-                if line.isdigit():
-                    current_pattern_id = int(line)
-                elif line:
-                    label, *realizations = line.split()
-                    verbalizers[current_pattern_id][label] = realizations
+            verbalizers = json.loads(fh.read())
+            # for line in fh.read().splitlines():
+            #     if line.isdigit():
+            #         current_pattern_id = int(line)
+            #     elif line:
+            #         label, *realizations = line.split()
+            #         verbalizers[current_pattern_id][label] = realizations
 
-        logger.info("Automatically loaded the following verbalizer: \n {}".format(verbalizers[pattern_id]))
+        logger.info("Automatically loaded the following verbalizer: \n {}".format(verbalizers[str(pattern_id)]))
 
         def verbalize(label) -> List[str]:
-            return verbalizers[pattern_id][label]
+            return verbalizers[str(pattern_id)][label]
 
         return verbalize
 
@@ -673,6 +678,69 @@ class ExaggerationDetectionPVP(PVP):
         return ExaggerationDetectionPVP.VERBALIZER[label]
 
 
+class ExaggerationDetectionMultiTaskPVP(PVP):
+    """
+    Example for a pattern-verbalizer pair (PVP).
+    """
+
+    # Set this to the name of the task
+    TASK_NAME = "exaggeration-detection-multi-task"
+
+    # Set this to the verbalizer for the given task: a mapping from the task's labels (which can be obtained using
+    # the corresponding DataProcessor's get_labels method) to tokens from the language model's vocabulary
+    VERBALIZER = {
+        "0": ["sufficient", "enough", "authentic", "medium"],
+        "1": ["inferred", "estimated", "calculated", "borderline", "approximately", "variable", "roughly"],
+        "2": ["cautious", "premature", "uncertain", "conflicting", "limited"],
+        "3": ["touted", "proven", "replicated", "promoted", "distorted"]
+    }
+
+    def get_parts(self, example: InputExample):
+        """
+        This function defines the actual patterns: It takes as input an example and outputs the result of applying a
+        pattern to it. To allow for multiple patterns, a pattern_id can be passed to the PVP's constructor. This
+        method must implement the application of all patterns.
+        """
+
+        # We tell the tokenizer that both text_a and text_b can be truncated if the resulting sequence is longer than
+        # our language model's max sequence length.
+        text_a = self.shortenable(example.text_a)
+        text_b = self.shortenable(example.text_b)
+        type = example.meta['type']
+
+        # For each pattern_id, we define the corresponding pattern and return a pair of text a and text b (where text b
+        # can also be empty).
+        # if self.pattern_id == 0:
+        #     # this corresponds to the pattern [MASK]: a b
+        #     return [self.mask, ':', text_a, text_b], []
+        if self.pattern_id == 1 and type == 'press':
+            # this corresponds to the pattern [MASK] News: a || (b)
+            return ['Reporters say', text_a, '. The claim strength is', self.mask, text_b], []
+        elif self.pattern_id == 1 and type == 'abstract':
+            # this corresponds to the pattern [MASK] News: a || (b)
+            return ['Scientists say', text_a, '. The claim strength is', self.mask, text_b], []
+        # elif self.pattern_id == 2:
+        #     # this corresponds to the pattern [MASK] News: a || (b)
+        #     return ['"', self.mask, '" statement:', text_a, text_b], []
+        elif self.pattern_id == 3 and type == 'press':
+            # this corresponds to the pattern [MASK] News: a || (b)
+            return ['Popular media says', text_a, '. The claim strength is', self.mask, text_b], []
+        elif self.pattern_id == 3 and type == 'abstract':
+            # this corresponds to the pattern [MASK] News: a || (b)
+            return ['Academic literature says', text_a, '. The claim strength is', self.mask, text_b], []
+        # elif self.pattern_id == 4:
+        #     # this corresponds to the pattern [MASK] News: a || (b)
+        #     return ['(', self.mask, ')', text_a, text_b], []
+        # elif self.pattern_id == 5:
+        #     # this corresponds to the pattern [MASK] News: a || (b)
+        #     return ['[Type: ', self.mask, ']', text_a, text_b], []
+        else:
+            raise ValueError("No pattern implemented for id {}".format(self.pattern_id))
+
+    def verbalize(self, label) -> List[str]:
+        return ExaggerationDetectionMultiTaskPVP.VERBALIZER[label]
+
+
 class ExaggerationNLIDetectionPVP(PVP):
     """
     Example for a pattern-verbalizer pair (PVP).
@@ -683,9 +751,15 @@ class ExaggerationNLIDetectionPVP(PVP):
 
     # Set this to the verbalizer for the given task: a mapping from the task's labels (which can be obtained using
     # the corresponding DataProcessor's get_labels method) to tokens from the language model's vocabulary
+    # VERBALIZER = {
+    #     "0": ["Weak"],
+    #     "1": ["Mild"],
+    #     "2": ["Extreme"]
+    # }
+
     VERBALIZER = {
-        "0": ["Weak"],
-        "1": ["Mild"],
+        "0": ["Conservative"],
+        "1": ["Same"],
         "2": ["Extreme"]
     }
 
@@ -725,13 +799,130 @@ class ExaggerationNLIDetectionPVP(PVP):
         return ExaggerationNLIDetectionPVP.VERBALIZER[label]
 
 
+class ExaggerationNLIDetectionFromPetalPVP(PVP):
+    """
+    Example for a pattern-verbalizer pair (PVP).
+    """
+
+    # Set this to the name of the task
+    TASK_NAME = "exaggeration-detection-nli-from-petal"
+
+    # Set this to the verbalizer for the given task: a mapping from the task's labels (which can be obtained using
+    # the corresponding DataProcessor's get_labels method) to tokens from the language model's vocabulary
+
+    # These verbalizers were acquired using petal
+    # VERBALIZER = {
+    #     "0": ["underestimated", "diminishing", "pragmatic"],
+    #     "1": ["identical", "confirming"],
+    #     "2": ["false", "harmful", "inappropriate"]
+    # }
+    # VERBALIZER = {
+    #     "0": ["underestimated"],
+    #     "1": ["identical"],
+    #     "2": ["false"]
+    # }
+    # VERBALIZER = {
+    #         "0": ["preliminary", "debated", "tentative", "weighted"],
+    #         "1": ["amazing", "brilliant", "stunning", "superb"],
+    #         "2": ["disconnected", "inappropriate", "unhealthy", "biased"]
+    #     }
+    VERBALIZER = {
+        "0": ["preliminary", "theoretical", "proposed", "uncertainties"],
+        "1": ["repeating", "explicit", "normal"],
+        "2": ["mistaken", "wrong", "naive", "premature", "lies"]
+    }
+
+
+    def get_parts(self, example: InputExample):
+        """
+        This function defines the actual patterns: It takes as input an example and outputs the result of applying a
+        pattern to it. To allow for multiple patterns, a pattern_id can be passed to the PVP's constructor. This
+        method must implement the application of all patterns.
+        """
+
+        # We tell the tokenizer that both text_a and text_b can be truncated if the resulting sequence is longer than
+        # our language model's max sequence length.
+        text_a = self.shortenable(example.text_a)
+        text_b = self.shortenable(example.text_b)
+
+        # For each pattern_id, we define the corresponding pattern and return a pair of text a and text b (where text b
+        # can also be empty).
+        # if self.pattern_id == 0:
+        #     # this corresponds to the pattern [MASK]: a b
+        #     return ['Reporters say', text_a, '. Their claims are', self.mask], ['. Scientists say', text_b, '.']
+        if self.pattern_id == 1:
+            return ['Scientists claim', text_b, '.'], ['Reporters claim', text_a, '. The reporters claims are', self.mask, '.']
+        # if self.pattern_id == 2:
+        #     # this corresponds to the pattern [MASK]: a b
+        #     return ['Popular media claims:', text_a, '.'], ['These claims are', self.mask, '. Academic literature says', text_b, '.']
+        if self.pattern_id == 3:
+            return ['Academic literature claims', text_b, '.'], ['Popular media claims', text_a, '. The media claims are', self.mask, '.']
+        else:
+            raise ValueError("No pattern implemented for id {}".format(self.pattern_id))
+
+    def verbalize(self, label) -> List[str]:
+        return ExaggerationNLIDetectionFromPetalPVP.VERBALIZER[label]
+
+
+class ExaggerationNLIDetectionFromPetalFullPVP(PVP):
+    """
+    Example for a pattern-verbalizer pair (PVP).
+    """
+
+    # Set this to the name of the task
+    TASK_NAME = "exaggeration-detection-nli-from-petal-full"
+
+    # Set this to the verbalizer for the given task: a mapping from the task's labels (which can be obtained using
+    # the corresponding DataProcessor's get_labels method) to tokens from the language model's vocabulary
+
+    # These verbalizers were acquired using petal
+    VERBALIZER = {
+        "0": ["Less", "differently", "alternatively", "economically", "locally"],
+        "1": ["appropriate", "important", "fitting", "logical"],
+        "2": ["way", "furthermore", "dangerously", "totally", "really", "greatly", "exponentially"]
+    }
+
+    def get_parts(self, example: InputExample):
+        """
+        This function defines the actual patterns: It takes as input an example and outputs the result of applying a
+        pattern to it. To allow for multiple patterns, a pattern_id can be passed to the PVP's constructor. This
+        method must implement the application of all patterns.
+        """
+
+        # We tell the tokenizer that both text_a and text_b can be truncated if the resulting sequence is longer than
+        # our language model's max sequence length.
+        text_a = self.shortenable(example.text_a)
+        text_b = self.shortenable(example.text_b)
+
+        # For each pattern_id, we define the corresponding pattern and return a pair of text a and text b (where text b
+        # can also be empty).
+        # if self.pattern_id == 0:
+        #     # this corresponds to the pattern [MASK]: a b
+        #     return ['This press release is', self.mask, ':', text_a, '.'], ['Evidence:', text_b, '.']
+        # if self.pattern_id == 1:
+        #     return ['Evidence:', text_b, '.'], ['Given this, this press release is', self.mask, ':', text_a]
+        if self.pattern_id == 2:
+            # this corresponds to the pattern [MASK]: a b
+            return ['This press release, "', text_a, '" is', self.mask, ' exaggerated given this scientific paper: "', text_b, "."], []
+        # if self.pattern_id == 3:
+        #     # this corresponds to the pattern [MASK]: a b
+        #     return ['Given this scientific paper: "', text_b, '," this press release is', self.mask, ': "', text_a, '"'], []
+        #     return ['Academic literature says', text_b, '.'], ['At the same time, popular media claims', text_a, '. The media claims are', self.mask, '.']
+        else:
+            raise ValueError("No pattern implemented for id {}".format(self.pattern_id))
+
+    def verbalize(self, label) -> List[str]:
+        return ExaggerationNLIDetectionFromPetalFullPVP.VERBALIZER[label]
+
+
+
 class ConclusionDetectionPVP(PVP):
     """
     Example for a pattern-verbalizer pair (PVP).
     """
 
     # Set this to the name of the task
-    TASK_NAME = "conclusion-detection-basic"
+    TASK_NAME = "conclusion-detection"
 
     # Set this to the verbalizer for the given task: a mapping from the task's labels (which can be obtained using
     # the corresponding DataProcessor's get_labels method) to tokens from the language model's vocabulary
@@ -799,5 +990,10 @@ PVPS = {
     'ax-g': RtePVP,
     ExaggerationDetectionPVP.TASK_NAME: ExaggerationDetectionPVP,
     ExaggerationNLIDetectionPVP.TASK_NAME: ExaggerationNLIDetectionPVP,
-    ConclusionDetectionPVP.TASK_NAME: ConclusionDetectionPVP
+    'exaggeration-detection-nli-sentence': ExaggerationNLIDetectionPVP,
+    ConclusionDetectionPVP.TASK_NAME: ConclusionDetectionPVP,
+    ExaggerationNLIDetectionFromPetalPVP.TASK_NAME: ExaggerationNLIDetectionFromPetalPVP,
+    ExaggerationNLIDetectionFromPetalFullPVP.TASK_NAME: ExaggerationNLIDetectionFromPetalFullPVP,
+    'conclusion-detection-labeled': ConclusionDetectionPVP,
+    ExaggerationDetectionMultiTaskPVP.TASK_NAME: ExaggerationDetectionMultiTaskPVP
 }
