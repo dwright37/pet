@@ -1,5 +1,15 @@
 # Pattern-Exploiting Training (PET)
 
+## Multi-Task PET (MT-PET)
+This is a fork of the original PET repository with modifications to run multi-task PET (as well as some convenience changes). MT-PET is a version of PET which allows one to specify an auxiliary task on which to train. We show that this leads to improved performance on scientific exaggeration detection in our paper [Semi-Supervised Exaggeration Detection of Health Science Press Releases](https://arxiv.org/pdf/2108.13493.pdf%20) (Wright and Augenstein 2021). The CLI options we added to run MT-PET are as follows:
+
+- `aux_data_dir`: Specify the directory containing the auxiliary data. This should be the structured the same as with the main `data_dir`
+- `aux_task_name`: The name of the auxiliary task (for specifying the pattern and verbalizer classes to use)
+- `do_multi_task`: Set this to enable MT-PET
+- `balance_class_weight`: Sets a weight for the cross-entropy loss based on the class balance (for working with imbalanced datasets)
+
+The rest of this README is from the original PET repo.
+
 This repository contains the code for [Exploiting Cloze Questions for Few-Shot Text Classification and Natural Language Inference](https://arxiv.org/abs/2001.07676) and [It's Not Just Size That Matters: Small Language Models Are Also Few-Shot Learners](https://arxiv.org/abs/2009.07118). The papers introduce pattern-exploiting training (PET), a semi-supervised training procedure that reformulates input examples as cloze-style phrases. In low-resource settings, PET and iPET significantly outperform regular supervised training, various semi-supervised baselines and even GPT-3 despite requiring 99.9% less parameters. The iterative variant of PET (iPET) trains multiple generations of models and can even be used without any training data.
 
 <table>
